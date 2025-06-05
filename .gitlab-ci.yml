@@ -1,0 +1,60 @@
+stages:
+  - docker
+  - deploy
+
+
+# Since it's running on v_anthracite it's needed to use buildx
+docker:
+  stage: docker
+  tags: ["docker"]
+  image: docker:dind
+  before_script:
+    - docker login -u $CI_REGISTRY_USER -p $CI_JOB_TOKEN $CI_REGISTRY
+  script:
+    #- docker build -t $CI_REGISTRY_IMAGE .
+    #- docker push $CI_REGISTRY_IMAGE
+    - docker buildx create --use --platform=linux/aarch64,linux/amd64 --name $CI_PROJECT_NAME
+    - docker buildx build --provenance=false --platform linux/aarch64,linux/amd64 -t $CI_REGISTRY_IMAGE --push .
+  after_script:
+    - docker logout
+
+
+
+# # Since it's running on v_anthracite it's needed to use buildx
+# docker:
+#   stage: docker
+#   tags: ["shell"]  # tag assigned to your shell-based runner
+#   before_script:
+#     - docker login -u "$CI_REGISTRY_USER" -p "$CI_JOB_TOKEN" "$CI_REGISTRY"
+#     # ensure binfmt/qemu are registered (should already be set up on host)
+#     - docker buildx rm mybuilder || true
+#     - docker buildx create --name mybuilder --use
+#     - docker buildx inspect --bootstrap
+#   script:
+#     - docker buildx build --provenance=false --platform linux/amd64,linux/aarch64 -t "$CI_REGISTRY_IMAGE" --push .
+#   after_script:
+#     - docker logout "$CI_REGISTRY"
+
+deploy:
+  stage: deploy
+  tags: [ "docker"]
+  image: $DOCKER_PORTAINER_IMAGE
+  #before_script:
+  #  - docker login -u $CI_REGISTRY_USER -p $CI_JOB_TOKEN $CI_REGISTRY
+  variables:
+    PORTAINER_USERNAME: $PORTAINER_USER
+    PORTAINER_PASSWORD: $PORTAINER_PASSWORD
+    PORTAINER_ENVIRONMENT: ANTHRACITE | 4CPU, 24Gb RAM, 100ssd
+    PORTAINER_STACK: hwinfo
+    STACKFILE: docker-compose.yml
+  script:
+    - /app/portainerDeploy.py
+      --portainer_url "$PORTAINER_URL"
+      --username "$PORTAINER_USERNAME"
+      --password "$PORTAINER_PASSWORD"
+      --environment_name "$PORTAINER_ENVIRONMENT"
+      --stack_name "$PORTAINER_STACK"
+      --stack_file "$STACKFILE"
+  #after_script:
+  #  - docker logout
+

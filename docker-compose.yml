@@ -1,0 +1,28 @@
+---
+services:
+  app:
+    image: registry.vgscq.cc/vgscq/hwinfo-db:latest
+    restart: always
+    volumes:
+      - /docker/hwdb/:/data
+      - /etc/timezone:/etc/timezone:ro 
+    #ports:
+    #  - '5000:5000'
+    command: python -u /app/app.py
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.hwdb.rule=Host(`hwdb.vgscq.cc`)"
+      - "traefik.http.routers.hwdb.entrypoints=https"
+      - "traefik.http.routers.hwdb.tls.certresolver=letsencrypt"
+      - "traefik.http.services.hwdb.loadbalancer.server.port=5000"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    networks:
+     - traefik
+
+networks:
+  traefik:
+    external: true
