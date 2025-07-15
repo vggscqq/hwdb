@@ -1,6 +1,4 @@
 schemaVersion: 2.0.0
-metadata:
-  name: hwinfo-db
 components:
   - name: dev
     container:
@@ -9,12 +7,8 @@ commands:
   - id: install
     exec:
       component: dev
-      commandLine: "pip install -r requirements.txt"
+      commandLine: "cd frontend && yarn install && cd ../backend && pip install -r requirements.txt"
   - id: build
     exec:
       component: dev
-      commandLine: "echo 'No build step required for Python application'"
-  - id: test
-    exec:
-      component: dev
-      commandLine: "python test_app.py"
+      commandLine: "cd frontend && yarn build"

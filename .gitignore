@@ -1,2 +1,6 @@
 pcs.db
 test_app.py
+
+frontend/node_modules/
+frontend/.yarn/install-state.gz
+frontend/dist/

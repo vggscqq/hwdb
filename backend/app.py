@@ -7,6 +7,7 @@ from flask_cors import CORS
 app = Flask(__name__)
 CORS(app)  # Enable CORS for all routes
 DB_PATH = '/data/pcs.db'
+#DB_PATH = './pcs.db'
 
 # HTML template for the dashboard
 DASHBOARD_TEMPLATE = '''
@@ -59,6 +60,23 @@ DASHBOARD_TEMPLATE = '''
             font-weight: bold;
             font-size: 1.2em;
             color: #444;
+        }
+        .header-buttons {
+            display: flex;
+            gap: 5px;
+            align-items: center;
+        }
+        .delete-btn {
+            background: none;
+            border: none;
+            font-size: 1.2em;
+            cursor: pointer;
+            color: #d9534f;
+            padding: 5px;
+            border-radius: 4px;
+        }
+        .delete-btn:hover {
+            background-color: #f8d7da;
         }
         .toggle-btn {
             background: none;
@@ -197,9 +215,12 @@ DASHBOARD_TEMPLATE = '''
             
             // Short info section (always visible)
             const shortInfo = `
-                <div class="pc-header" onclick="toggleExtendedInfo('${pc.id}')">
-                    <div class="pc-title">${pc.host || 'Unknown Host'}</div>
-                    <button id="toggle-btn-${pc.id}" class="toggle-btn">+</button>
+                <div class="pc-header">
+                    <div class="pc-title" onclick="toggleExtendedInfo('${pc.id}')">${pc.host || 'Unknown Host'}</div>
+                    <div class="header-buttons">
+                        <button onclick="deletePC('${pc.id}')" class="delete-btn">🗑️</button>
+                        <button id="toggle-btn-${pc.id}" class="toggle-btn" onclick="toggleExtendedInfo('${pc.id}')">+</button>
+                    </div>
                 </div>
                 <div class="pc-short-info">
                     <div class="info-row">
@@ -235,6 +256,10 @@ DASHBOARD_TEMPLATE = '''
                     <div class="info-row">
                         <div class="info-label">Serial:</div>
                         <div class="info-value">${pc.serial || 'N/A'}</div>
+                    </div>
+                    <div class="info-row">
+                        <div class="info-label">Submitted:</div>
+                        <div class="info-value">${pc.submitted_at || 'N/A'}</div>
                     </div>
                     <div class="info-row">
                         <div class="info-label">Notes:</div>
@@ -316,6 +341,30 @@ DASHBOARD_TEMPLATE = '''
             } catch (error) {
                 console.error('Error saving notes:', error);
                 alert(`Error saving notes: ${error.message}`);
+            }
+        }
+
+        // Function to delete a PC
+        async function deletePC(pcId) {
+            if (!confirm('Are you sure you want to delete this PC? This action cannot be undone.')) {
+                return;
+            }
+            
+            try {
+                const response = await fetch(`/pc/${pcId}/delete`, {
+                    method: 'DELETE'
+                });
+                
+                if (!response.ok) {
+                    throw new Error('Failed to delete PC');
+                }
+                
+                // Reload the dashboard to reflect the changes
+                loadPCDashboard();
+                alert('PC deleted successfully!');
+            } catch (error) {
+                console.error('Error deleting PC:', error);
+                alert(`Error deleting PC: ${error.message}`);
             }
         }
 
@@ -447,8 +496,8 @@ def submit():
     
     # Update or insert the PC record
     cur.execute("""
-        INSERT OR REPLACE INTO pc (id, host, serial, cpu, mainboard, ram_total_gb, ram_slots, resolution, notes)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT OR REPLACE INTO pc (id, host, serial, cpu, mainboard, ram_total_gb, ram_slots, resolution, notes, submitted_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
     """, (
         pc_id,
         host,
@@ -507,8 +556,54 @@ def submit():
 def get_all_pcs():
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
-    cur.execute("SELECT id FROM pc")
-    pcs = [dict(zip([column[0] for column in cur.description], row)) for row in cur.fetchall()]
+    
+    # Get sorting and filtering parameters
+    sort_by = request.args.get('sort_by', 'submitted_at')  # Default sort by date
+    sort_order = request.args.get('sort_order', 'desc')  # Default newest first
+    tag_filter = request.args.get('tag')  # Optional tag filter
+    
+    # Build query with optional tag filtering
+    base_query = """
+        SELECT DISTINCT p.id, p.host, p.cpu, p.ram_total_gb, p.submitted_at,
+               GROUP_CONCAT(t.name) as tags,
+               GROUP_CONCAT(t.color) as tag_colors
+        FROM pc p
+        LEFT JOIN pc_tag pt ON p.id = pt.pc_id
+        LEFT JOIN tag t ON pt.tag_id = t.id
+    """
+    
+    params = []
+    if tag_filter:
+        base_query += " WHERE t.name = ?"
+        params.append(tag_filter)
+    
+    base_query += " GROUP BY p.id"
+    
+    # Add sorting
+    if sort_by in ['submitted_at', 'host', 'cpu']:
+        order_clause = f" ORDER BY p.{sort_by}"
+        if sort_order.lower() == 'desc':
+            order_clause += " DESC"
+        else:
+            order_clause += " ASC"
+        base_query += order_clause
+    
+    cur.execute(base_query, params)
+    rows = cur.fetchall()
+    
+    pcs = []
+    for row in rows:
+        pc_dict = dict(zip([column[0] for column in cur.description], row))
+        # Parse tags
+        if pc_dict['tags']:
+            tag_names = pc_dict['tags'].split(',')
+            tag_colors = pc_dict['tag_colors'].split(',')
+            pc_dict['tags'] = [{'name': name, 'color': color} for name, color in zip(tag_names, tag_colors)]
+        else:
+            pc_dict['tags'] = []
+        del pc_dict['tag_colors']
+        pcs.append(pc_dict)
+    
     conn.close()
     return jsonify(pcs)
 
@@ -519,7 +614,7 @@ def get_pc_details(pc_id):
     cur = conn.cursor()
 
     # Main PC data
-    cur.execute("SELECT * FROM pc WHERE id = ?", (pc_id,))
+    cur.execute("SELECT id, host, serial, cpu, mainboard, ram_total_gb, ram_slots, resolution, notes, datetime(submitted_at, 'localtime') as submitted_at FROM pc WHERE id = ?", (pc_id,))
     row = cur.fetchone()
     if not row:
         return jsonify({"error": "PC not found"}), 404
@@ -535,9 +630,164 @@ def get_pc_details(pc_id):
     cur.execute("SELECT size_gb, model, serial, path FROM disk WHERE pc_id = ?", (pc_id,))
     pc["disks"] = [dict(zip(["size_gb", "model", "serial", "path"], r)) for r in cur.fetchall()]
 
+    # Tags data
+    cur.execute("""
+        SELECT t.id, t.name, t.color
+        FROM tag t
+        JOIN pc_tag pt ON t.id = pt.tag_id
+        WHERE pt.pc_id = ?
+        ORDER BY t.name
+    """, (pc_id,))
+    pc["tags"] = [dict(zip(["id", "name", "color"], r)) for r in cur.fetchall()]
+
     conn.close()
     return jsonify(pc)
 
+
+@app.route('/pc/<pc_id>/delete', methods=['DELETE'])
+def delete_pc(pc_id):
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+
+    try:
+        # Check if PC exists
+        cur.execute("SELECT id FROM pc WHERE id = ?", (pc_id,))
+        if not cur.fetchone():
+            conn.close()
+            return jsonify({"error": "PC not found"}), 404
+
+        # Delete related records first due to foreign key constraints
+        cur.execute("DELETE FROM gpu WHERE pc_id = ?", (pc_id,))
+        cur.execute("DELETE FROM ram_stick WHERE pc_id = ?", (pc_id,))
+        cur.execute("DELETE FROM disk WHERE pc_id = ?", (pc_id,))
+        
+        # Delete the PC record
+        cur.execute("DELETE FROM pc WHERE id = ?", (pc_id,))
+        
+        conn.commit()
+        return jsonify({"status": "success", "message": "PC and all related data deleted successfully"})
+    
+    except sqlite3.Error as e:
+        conn.rollback()
+        return jsonify({"error": f"Database error: {str(e)}"}), 500
+    finally:
+        conn.close()
+
+# Tag management endpoints
+@app.route('/tags', methods=['GET'])
+def get_all_tags():
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("SELECT id, name, color FROM tag ORDER BY name")
+    tags = [dict(zip([column[0] for column in cur.description], row)) for row in cur.fetchall()]
+    conn.close()
+    return jsonify(tags)
+
+@app.route('/tags', methods=['POST'])
+def create_tag():
+    data = request.get_json()
+    name = data.get('name', '').strip()
+    color = data.get('color', '#228BE6')
+    
+    if not name:
+        return jsonify({"error": "Tag name is required"}), 400
+    
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    
+    try:
+        cur.execute("INSERT INTO tag (name, color) VALUES (?, ?)", (name, color))
+        tag_id = cur.lastrowid
+        conn.commit()
+        conn.close()
+        return jsonify({"id": tag_id, "name": name, "color": color}), 201
+    except sqlite3.IntegrityError:
+        conn.close()
+        return jsonify({"error": "Tag name already exists"}), 409
+
+@app.route('/tags/<int:tag_id>', methods=['DELETE'])
+def delete_tag(tag_id):
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    
+    # Check if tag exists
+    cur.execute("SELECT id FROM tag WHERE id = ?", (tag_id,))
+    if not cur.fetchone():
+        conn.close()
+        return jsonify({"error": "Tag not found"}), 404
+    
+    # Delete tag (cascade will handle pc_tag relationships)
+    cur.execute("DELETE FROM tag WHERE id = ?", (tag_id,))
+    conn.commit()
+    conn.close()
+    
+    return jsonify({"status": "success", "message": "Tag deleted successfully"})
+
+@app.route('/pc/<pc_id>/tags', methods=['POST'])
+def add_tag_to_pc(pc_id):
+    data = request.get_json()
+    tag_id = data.get('tag_id')
+    
+    if not tag_id:
+        return jsonify({"error": "tag_id is required"}), 400
+    
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    
+    # Check if PC exists
+    cur.execute("SELECT id FROM pc WHERE id = ?", (pc_id,))
+    if not cur.fetchone():
+        conn.close()
+        return jsonify({"error": "PC not found"}), 404
+    
+    # Check if tag exists
+    cur.execute("SELECT id FROM tag WHERE id = ?", (tag_id,))
+    if not cur.fetchone():
+        conn.close()
+        return jsonify({"error": "Tag not found"}), 404
+    
+    try:
+        cur.execute("INSERT INTO pc_tag (pc_id, tag_id) VALUES (?, ?)", (pc_id, tag_id))
+        conn.commit()
+        conn.close()
+        return jsonify({"status": "success", "message": "Tag added to PC"})
+    except sqlite3.IntegrityError:
+        conn.close()
+        return jsonify({"error": "Tag already assigned to this PC"}), 409
+
+@app.route('/pc/<pc_id>/tags/<int:tag_id>', methods=['DELETE'])
+def remove_tag_from_pc(pc_id, tag_id):
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    
+    # Remove tag from PC
+    cur.execute("DELETE FROM pc_tag WHERE pc_id = ? AND tag_id = ?", (pc_id, tag_id))
+    
+    if cur.rowcount == 0:
+        conn.close()
+        return jsonify({"error": "Tag not found on this PC"}), 404
+    
+    conn.commit()
+    conn.close()
+    
+    return jsonify({"status": "success", "message": "Tag removed from PC"})
+
+@app.route('/pc/<pc_id>/tags', methods=['GET'])
+def get_pc_tags(pc_id):
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    
+    cur.execute("""
+        SELECT t.id, t.name, t.color
+        FROM tag t
+        JOIN pc_tag pt ON t.id = pt.tag_id
+        WHERE pt.pc_id = ?
+        ORDER BY t.name
+    """, (pc_id,))
+    
+    tags = [dict(zip([column[0] for column in cur.description], row)) for row in cur.fetchall()]
+    conn.close()
+    return jsonify(tags)
 
 @app.route('/')
 def dashboard():
